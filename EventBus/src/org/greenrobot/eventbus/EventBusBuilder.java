@@ -28,6 +28,9 @@ import java.util.concurrent.Executors;
 /**
  * Creates EventBus instances with custom parameters and also allows to install a custom default EventBus instance.
  * Create a new builder using {@link EventBus#builder()}.
+ *
+ * 跟一般 Builder 类似，用于在需要设置参数过多时构造 EventBus。包含的属性也是 EventBus 的一些设置参数，
+ * build 函数用于新建 EventBus 对象，installDefaultEventBus 函数将当前设置应用于 Default EventBus。
  */
 @SuppressWarnings("unused")
 public class EventBusBuilder {
@@ -39,6 +42,7 @@ public class EventBusBuilder {
     boolean sendNoSubscriberEvent = true;
     boolean throwSubscriberException;
     boolean eventInheritance = true;
+
     boolean ignoreGeneratedIndex;
     boolean strictMethodVerification;
     ExecutorService executorService = DEFAULT_EXECUTOR_SERVICE;

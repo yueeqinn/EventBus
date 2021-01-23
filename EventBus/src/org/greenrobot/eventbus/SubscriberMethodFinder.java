@@ -26,6 +26,43 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 订阅者响应函数信息存储和查找类.
+ *
+ @Subscribe(threadMode = ThreadMode.PostThread) //默认方式, 在发送线程执行
+ public void onUserEvent(UserEvent event) {
+ }
+ @Subscribe(threadMode = ThreadMode.MainThread) //在ui线程执行
+ public void onUserEvent(UserEvent event) {
+ }
+ @Subscribe(threadMode = ThreadMode.BackgroundThread) //在后台线程执行
+ public void onUserEvent(UserEvent event) {
+ }
+ @Subscribe(threadMode = ThreadMode.Async) //强制在后台执行
+ public void onUserEvent(UserEvent event) {
+ }
+
+ 由 HashMap 缓存，以 ${subscriberClassName} 为 key，SubscriberMethod 对象为元素的 ArrayList 为 value。
+ findSubscriberMethods 函数用于查找订阅者响应函数，如果不在缓存中，则遍历自己的每个函数并递归父类查找，
+ 查找成功后保存到缓存中。遍历及查找规则为：
+ a. 遍历 subscriberClass 每个方法；
+ b. 该方法不以java.、javax.、android.这些 SDK 函数开头，并以 ${eventMethodName} 开头，表示可能是事件响应函数继续，否则检查下一个方法；
+ c. 该方法是否是 public 的，并且不是 ABSTRACT、STATIC、BRIDGE、SYNTHETIC 修饰的，满足条件则继续。其中 BRIDGE、SYNTHETIC 为编译器生成的一些函数修饰符；
+ d. 该方法是否只有 1 个参数，满足条件则继续；
+ e. 该方法名为 ${eventMethodName} 则 mSubscriberThreadMode 为ThreadMode.PostThread；
+ 该方法名为 ${eventMethodName}MainThread 则 mSubscriberThreadMode 为ThreadMode.MainThread；
+ 该方法名为 ${eventMethodName}BackgroundThread 则 mSubscriberThreadMode 为ThreadMode.BackgroundThread；
+ 该方法名为 ${eventMethodName}Async 则 mSubscriberThreadMode 为ThreadMode.Async；
+ 其他情况且不在忽略名单 (skipMethodVerificationForClasses) 中则抛出异常。
+ f. 得到该方法唯一的参数即事件类型 eventType，将这个方法、mSubscriberThreadMode、eventType 一起构造 SubscriberMethod 对象放到 ArrayList 中。
+ g. 回到 b 遍历 subscriberClass 的下一个方法，若方法遍历结束到 h；
+ h. 回到 a 遍历自己的父类，若父类遍历结束回到 i；
+ i. 若 ArrayList 依然为空则抛出异常，否则会将 ArrayList 做为 value，${subscriberClassName} 做为 key 放到缓存 HashMap 中。
+ 对于事件函数的查找有两个小的性能优化点：
+ a. 第一次查找后保存到了缓存中，即上面介绍的 HashMap
+ b. 遇到 java. javax. android. 开头的类会自动停止查找 类中的 skipMethodVerificationForClasses 属性表示跳过哪些类中非法以 {eventMethodName} 开头的函数检查，若不跳过泽辉抛出异常。
+ PS：在此之前的版本 EventBus 允许自定义事件响应函数名称，缓存的 HashMap key 为 ${subscriberClassName}.${eventMethodName}，这版本中此功能已经被去除。
+ */
 class SubscriberMethodFinder {
     /*
      * In newer class files, compilers may add methods. Those are called bridge or synthetic methods.
@@ -38,8 +75,11 @@ class SubscriberMethodFinder {
     private static final int MODIFIERS_IGNORE = Modifier.ABSTRACT | Modifier.STATIC | BRIDGE | SYNTHETIC;
     private static final Map<Class<?>, List<SubscriberMethod>> METHOD_CACHE = new ConcurrentHashMap<>();
 
+    /** 订阅者信息索引对象列表. */
     private List<SubscriberInfoIndex> subscriberInfoIndexes;
+    /** 是否严格的方法验证. */
     private final boolean strictMethodVerification;
+    /** 是否忽略产生的索引. */
     private final boolean ignoreGeneratedIndex;
 
     private static final int POOL_SIZE = 4;
@@ -52,6 +92,11 @@ class SubscriberMethodFinder {
         this.ignoreGeneratedIndex = ignoreGeneratedIndex;
     }
 
+    /**
+     * 查找订阅者方法
+     *
+     * @param subscriberClass 订阅者类型
+     */
     List<SubscriberMethod> findSubscriberMethods(Class<?> subscriberClass) {
         List<SubscriberMethod> subscriberMethods = METHOD_CACHE.get(subscriberClass);
         if (subscriberMethods != null) {
@@ -63,6 +108,7 @@ class SubscriberMethodFinder {
         } else {
             subscriberMethods = findUsingInfo(subscriberClass);
         }
+
         if (subscriberMethods.isEmpty()) {
             throw new EventBusException("Subscriber " + subscriberClass
                     + " and its super classes have no public methods with the @Subscribe annotation");
@@ -72,10 +118,17 @@ class SubscriberMethodFinder {
         }
     }
 
+    /**
+     * 以订阅者信息查找
+     *
+     * @param subscriberClass 订阅者信息
+     */
     private List<SubscriberMethod> findUsingInfo(Class<?> subscriberClass) {
         FindState findState = prepareFindState();
         findState.initForSubscriber(subscriberClass);
+        /* 递归查找 */
         while (findState.clazz != null) {
+            /*以信息查找在单个类*/
             findState.subscriberInfo = getSubscriberInfo(findState);
             if (findState.subscriberInfo != null) {
                 SubscriberMethod[] array = findState.subscriberInfo.getSubscriberMethods();
@@ -92,6 +145,11 @@ class SubscriberMethodFinder {
         return getMethodsAndRelease(findState);
     }
 
+    /**
+     * 获取方法并释放
+     *
+     * @param findState
+     */
     private List<SubscriberMethod> getMethodsAndRelease(FindState findState) {
         List<SubscriberMethod> subscriberMethods = new ArrayList<>(findState.subscriberMethods);
         findState.recycle();
@@ -106,6 +164,9 @@ class SubscriberMethodFinder {
         return subscriberMethods;
     }
 
+    /**
+     * 准备查找状态
+     */
     private FindState prepareFindState() {
         synchronized (FIND_STATE_POOL) {
             for (int i = 0; i < POOL_SIZE; i++) {
@@ -137,6 +198,11 @@ class SubscriberMethodFinder {
         return null;
     }
 
+    /**
+     * 以反射查找
+     *
+     * @param subscriberClass 订阅者类型
+     */
     private List<SubscriberMethod> findUsingReflection(Class<?> subscriberClass) {
         FindState findState = prepareFindState();
         findState.initForSubscriber(subscriberClass);
@@ -147,6 +213,11 @@ class SubscriberMethodFinder {
         return getMethodsAndRelease(findState);
     }
 
+    /**
+     * 以反射查找在单个类
+     *
+     * @param findState 查找状态
+     */
     private void findUsingReflectionInSingleClass(FindState findState) {
         Method[] methods;
         try {
@@ -198,17 +269,48 @@ class SubscriberMethodFinder {
         METHOD_CACHE.clear();
     }
 
+    /**
+     * 查找状态
+     */
     static class FindState {
+        /**
+         * 订阅者方法列表
+         */
         final List<SubscriberMethod> subscriberMethods = new ArrayList<>();
+        /**
+         * 事件类型与其任意方法的集合
+         */
         final Map<Class, Object> anyMethodByEventType = new HashMap<>();
+        /**
+         * 方法键与其订阅者类型的集合
+         */
         final Map<String, Class> subscriberClassByMethodKey = new HashMap<>();
+        /**
+         * 方法键构造者
+         */
         final StringBuilder methodKeyBuilder = new StringBuilder(128);
-
+        /**
+         * 订阅者类型
+         */
         Class<?> subscriberClass;
+        /**
+         * 临时类型
+         */
         Class<?> clazz;
+        /**
+         * 跳过父类
+         */
         boolean skipSuperClasses;
+        /**
+         * 订阅者信息
+         */
         SubscriberInfo subscriberInfo;
 
+        /**
+         * 为订阅者初始化查找状态
+         *
+         * @param subscriberClass
+         */
         void initForSubscriber(Class<?> subscriberClass) {
             this.subscriberClass = clazz = subscriberClass;
             skipSuperClasses = false;
@@ -226,6 +328,12 @@ class SubscriberMethodFinder {
             subscriberInfo = null;
         }
 
+        /**
+         * 检查添加。false:在缓存中已存在，true:在缓存中不存在。
+         *
+         * @param method 方法
+         * @param eventType 事件类型
+         */
         boolean checkAdd(Method method, Class<?> eventType) {
             // 2 level check: 1st level with event type only (fast), 2nd level with complete signature when required.
             // Usually a subscriber doesn't have methods listening to the same event type.
@@ -245,6 +353,12 @@ class SubscriberMethodFinder {
             }
         }
 
+        /**
+         * 检查添加。false:在子类中已存在，true:在子类中不存在。
+         *
+         * @param method
+         * @param eventType
+         */
         private boolean checkAddWithMethodSignature(Method method, Class<?> eventType) {
             methodKeyBuilder.setLength(0);
             methodKeyBuilder.append(method.getName());
@@ -263,6 +377,9 @@ class SubscriberMethodFinder {
             }
         }
 
+        /**
+         * 跳转到父类
+         */
         void moveToSuperclass() {
             if (skipSuperClasses) {
                 clazz = null;
